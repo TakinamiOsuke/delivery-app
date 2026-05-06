@@ -65,6 +65,8 @@ export default function AppPage() {
   const [activeTab, setActiveTab] = useState<'register' | 'list'>('register')
   const [placingFor, setPlacingFor] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [isDelivering, setIsDelivering] = useState(false)
+  const [deliveredIds, setDeliveredIds] = useState<Set<string>>(new Set())
 
   // Form state
   const [fName, setFName] = useState('')
@@ -160,38 +162,66 @@ export default function AppPage() {
     return a.sequenceNumber - b.sequenceNumber
   })
 
+  const handleDeliveryToggle = () => {
+    if (isDelivering) {
+      setIsDelivering(false)
+      setDeliveredIds(new Set())
+    } else {
+      setIsDelivering(true)
+    }
+  }
+
+  const handleToggleDelivered = (id: string) => {
+    setDeliveredIds(prev => {
+      const s = new Set(prev)
+      if (s.has(id)) s.delete(id)
+      else s.add(id)
+      return s
+    })
+  }
+
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Segoe UI','Hiragino Sans','Meiryo',sans-serif", background: '#f0f2f5' }}>
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', fontFamily: "'Segoe UI','Hiragino Sans','Meiryo',sans-serif", background: '#f0f2f5' }}>
       {/* Header */}
       <header style={{
-        background: '#1a56db', color: 'white', padding: '10px 20px',
-        display: 'flex', alignItems: 'center', gap: '10px', boxShadow: '0 2px 6px rgba(0,0,0,0.2)', flexShrink: 0,
+        background: '#1a56db', color: 'white',
+        padding: '7px 12px',
+        paddingTop: 'max(7px, env(safe-area-inset-top))',
+        paddingLeft: 'max(12px, env(safe-area-inset-left))',
+        paddingRight: 'max(12px, env(safe-area-inset-right))',
+        display: 'flex', alignItems: 'center', gap: '8px',
+        boxShadow: '0 2px 6px rgba(0,0,0,0.2)', flexShrink: 0,
       }}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
           <path d="M1 3h15v13H1z"/><path d="M16 8h4l3 3v5h-7V8z"/>
           <circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>
         </svg>
-        <span style={{ fontWeight: 700, fontSize: '1.1rem', flex: 1 }}>配達業務管理</span>
-        {/* サイドバー開閉ボタン */}
+        <span style={{ fontWeight: 700, fontSize: '0.95rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {user.displayName || user.email}
+        </span>
+        {/* 配達開始/終了 */}
+        <button onClick={handleDeliveryToggle} style={{
+          background: isDelivering ? '#ef4444' : '#16a34a',
+          border: 'none',
+          color: 'white', borderRadius: '6px', padding: '5px 10px',
+          cursor: 'pointer', fontSize: '0.8rem', fontWeight: 700, flexShrink: 0,
+          boxShadow: isDelivering ? '0 0 0 2px rgba(239,68,68,0.4)' : 'none',
+        }}>
+          {isDelivering ? '配達終了' : '配達開始'}
+        </button>
+        {/* メニューボタン */}
         <button onClick={() => setSidebarOpen(o => !o)} style={{
           background: sidebarOpen ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.2)',
           border: '1px solid rgba(255,255,255,0.4)',
-          color: 'white', borderRadius: '6px', padding: '5px 12px',
-          cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600,
-          display: 'flex', alignItems: 'center', gap: '5px',
+          color: 'white', borderRadius: '6px', padding: '5px 10px',
+          cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, flexShrink: 0,
+          display: 'flex', alignItems: 'center', gap: '4px',
         }}>
-          {sidebarOpen ? (
-            <><span style={{ fontSize: '1rem' }}>✕</span> 閉じる</>
-          ) : (
-            <><span style={{ fontSize: '1rem' }}>☰</span> メニュー</>
-          )}
+          {sidebarOpen ? <>✕ 閉じる</> : <>☰ メニュー</>}
         </button>
-        <span style={{ fontSize: '0.78rem', opacity: 0.8, maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {user.displayName || user.email}
-        </span>
         <button onClick={() => signOut(auth)} style={{
           background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)',
-          color: 'white', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.82rem',
+          color: 'white', borderRadius: '6px', padding: '5px 8px', cursor: 'pointer', fontSize: '0.78rem', flexShrink: 0,
         }}>
           ログアウト
         </button>
@@ -276,6 +306,9 @@ export default function AppPage() {
           placingFor={placingFor}
           placingForName={placingFor ? (customers.find(c => c.id === placingFor)?.name ?? '') : ''}
           onCancelPlacement={() => setPlacingFor(null)}
+          isDelivering={isDelivering}
+          deliveredIds={deliveredIds}
+          onToggleDelivered={handleToggleDelivered}
         />
       </div>
     </div>

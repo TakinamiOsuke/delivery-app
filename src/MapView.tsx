@@ -3,7 +3,6 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Customer } from './types'
 
-// Fix default icon paths broken by Vite bundling
 delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -17,22 +16,28 @@ interface Props {
   placingFor?: string | null
   placingForName?: string
   onCancelPlacement?: () => void
+  isDelivering: boolean
+  deliveredIds: Set<string>
+  onToggleDelivered: (id: string) => void
 }
 
-function makeNumberedIcon(num: number) {
+function makeNumberedIcon(num: number, delivered: boolean) {
+  const bg = delivered ? '#ef4444' : '#1a56db'
   return L.divIcon({
     className: '',
-    html: `<div style="background:#1a56db;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:10px;border:2px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)">${num}</div>`,
+    html: `<div style="background:${bg};color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:10px;border:2px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)">${num}</div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
     popupAnchor: [0, -14],
   })
 }
 
-function makeUnsetIcon() {
+function makeUnsetIcon(delivered: boolean) {
+  const bg = delivered ? '#ef4444' : '#9ca3af'
+  const label = delivered ? '✓' : '?'
   return L.divIcon({
     className: '',
-    html: `<div style="background:#9ca3af;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:10px;border:2px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)">?</div>`,
+    html: `<div style="background:${bg};color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:10px;border:2px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)">${label}</div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
     popupAnchor: [0, -14],
@@ -47,6 +52,24 @@ function makeCurrentLocationIcon() {
     </div>`,
     iconSize: [20, 20],
     iconAnchor: [10, 10],
+  })
+}
+
+function computeBearing(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const φ1 = lat1 * Math.PI / 180
+  const φ2 = lat2 * Math.PI / 180
+  const Δλ = (lng2 - lng1) * Math.PI / 180
+  const y = Math.sin(Δλ) * Math.cos(φ2)
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
+}
+
+function makeArrowIcon(bearing: number) {
+  return L.divIcon({
+    className: '',
+    html: `<div style="transform:rotate(${bearing}deg);color:#1a56db;font-size:13px;line-height:1;font-weight:900;filter:drop-shadow(0 0 2px white)">▶</div>`,
+    iconSize: [13, 13],
+    iconAnchor: [6, 6],
   })
 }
 
@@ -66,18 +89,25 @@ async function fetchRoadRoute(waypoints: [number, number][]): Promise<[number, n
   }
 }
 
-export default function MapView({ customers, onMapClick, placingFor, placingForName, onCancelPlacement }: Props) {
+export default function MapView({ customers, onMapClick, placingFor, placingForName, onCancelPlacement, isDelivering, deliveredIds, onToggleDelivered }: Props) {
   const mapRef = useRef<L.Map | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const markerLayerRef = useRef<L.LayerGroup | null>(null)
   const routeLayerRef = useRef<L.Polyline | null>(null)
+  const arrowLayerRef = useRef<L.LayerGroup | null>(null)
   const locationMarkerRef = useRef<L.Marker | null>(null)
   const locationCircleRef = useRef<L.Circle | null>(null)
   const watchIdRef = useRef<number | null>(null)
   const placingForRef = useRef<string | null>(null)
+  const isDeliveringRef = useRef(false)
+  const onToggleDeliveredRef = useRef(onToggleDelivered)
   const [mapReady, setMapReady] = useState(false)
   const [locationError, setLocationError] = useState<string | null>(null)
   const [routeInfo, setRouteInfo] = useState<{ count: number; names: string[] }>({ count: 0, names: [] })
+
+  // Sync refs
+  useEffect(() => { isDeliveringRef.current = isDelivering }, [isDelivering])
+  useEffect(() => { onToggleDeliveredRef.current = onToggleDelivered }, [onToggleDelivered])
 
   // Init map once
   useEffect(() => {
@@ -88,13 +118,13 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     }).addTo(map)
     mapRef.current = map
     markerLayerRef.current = L.layerGroup().addTo(map)
+    arrowLayerRef.current = L.layerGroup().addTo(map)
     setMapReady(true)
 
     map.on('click', (e: L.LeafletMouseEvent) => {
       onMapClick?.(e.latlng.lat, e.latlng.lng)
     })
 
-    // Geolocation watch — 取得するたびにマップ中心を現在地に追従
     if (navigator.geolocation) {
       const id = navigator.geolocation.watchPosition(
         (pos) => {
@@ -123,8 +153,8 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
             locationCircleRef.current.setRadius(accuracy)
           }
 
-          // 配置モード中は地図を動かさない（クリック位置がズレるため）
-          if (!placingForRef.current) {
+          // 配達中かつ配置モード中でなければ追従
+          if (isDeliveringRef.current && !placingForRef.current) {
             map.panTo([latitude, longitude], { animate: true, duration: 0.5 })
           }
         },
@@ -132,7 +162,7 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
           if (err.code === 1) setLocationError('位置情報の使用が拒否されました')
           else setLocationError('現在地を取得できません')
         },
-        { enableHighAccuracy: true, maximumAge: 5000 }
+        { enableHighAccuracy: true, maximumAge: 500, timeout: 5000 }
       )
       watchIdRef.current = id
     }
@@ -144,12 +174,12 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     }
   }, [])
 
-  // placingFor を ref に同期（geolocation コールバック内で参照するため）
+  // Sync placingFor ref
   useEffect(() => {
     placingForRef.current = placingFor ?? null
   }, [placingFor])
 
-  // Update map click cursor and Escape key handler when placing
+  // Cursor + Escape key when placing
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
@@ -162,61 +192,81 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [placingFor, onCancelPlacement])
 
-  // Redraw markers + route when customers change (or when map becomes ready)
+  // Redraw customer markers when customers or delivered state changes
   useEffect(() => {
     const map = mapRef.current
     const layer = markerLayerRef.current
     if (!mapReady || !map || !layer) return
 
     layer.clearLayers()
-    if (routeLayerRef.current) {
-      map.removeLayer(routeLayerRef.current)
-      routeLayerRef.current = null
-    }
 
     const geocoded = customers.filter(c => c.geocoded && c.lat !== null && c.lng !== null)
-    if (geocoded.length === 0) {
-      setRouteInfo({ count: 0, names: [] })
-      return
-    }
+    if (geocoded.length === 0) return
 
     const positions: [number, number][] = []
     geocoded.forEach(c => {
-      const icon = c.sequenceNumber !== null ? makeNumberedIcon(c.sequenceNumber) : makeUnsetIcon()
+      const isDelivered = deliveredIds.has(c.id)
+      const icon = c.sequenceNumber !== null
+        ? makeNumberedIcon(c.sequenceNumber, isDelivered)
+        : makeUnsetIcon(isDelivered)
       const seqLabel = c.sequenceNumber !== null ? `[${c.sequenceNumber}] ` : ''
       const productsLine = c.products
         ? `<br><span style="font-size:0.8rem;color:#555">商品: ${c.products}</span>` : ''
+      const deliveredLine = isDelivered
+        ? `<br><span style="font-size:0.78rem;color:#dc2626;font-weight:600">✓ 配達済み</span>` : ''
       L.marker([c.lat!, c.lng!], { icon })
-        .bindPopup(`<b>${seqLabel}${c.name}</b><br><span style="font-size:0.82rem;color:#555">${c.address}</span>${productsLine}`)
+        .on('click', () => onToggleDeliveredRef.current(c.id))
+        .bindPopup(`<b>${seqLabel}${c.name}</b><br><span style="font-size:0.82rem;color:#555">${c.address}</span>${productsLine}${deliveredLine}`)
         .addTo(layer)
       positions.push([c.lat!, c.lng!])
     })
 
     if (positions.length === 1) map.setView(positions[0], 14)
     else if (positions.length > 1) map.fitBounds(L.latLngBounds(positions), { padding: [50, 50] })
+  }, [customers, mapReady, deliveredIds])
 
-    // Road-based route for ordered customers
+  // Draw route + directional arrows when customers change
+  useEffect(() => {
+    const map = mapRef.current
+    const arrows = arrowLayerRef.current
+    if (!mapReady || !map || !arrows) return
+
+    if (routeLayerRef.current) {
+      map.removeLayer(routeLayerRef.current)
+      routeLayerRef.current = null
+    }
+    arrows.clearLayers()
+
+    const geocoded = customers.filter(c => c.geocoded && c.lat !== null && c.lng !== null)
     const ordered = geocoded
       .filter(c => c.sequenceNumber !== null)
       .sort((a, b) => a.sequenceNumber! - b.sequenceNumber!)
 
     setRouteInfo({ count: ordered.length, names: ordered.map(c => `[${c.sequenceNumber}] ${c.name}`) })
 
-    if (ordered.length >= 2) {
-      const waypoints: [number, number][] = ordered.map(c => [c.lat!, c.lng!])
-      fetchRoadRoute(waypoints).then(routeCoords => {
-        if (!mapRef.current || !routeCoords) {
-          // Fallback: straight lines
-          routeLayerRef.current = L.polyline(waypoints, {
-            color: '#1a56db', weight: 4, opacity: 0.8, dashArray: '8,4',
-          }).addTo(mapRef.current!)
-          return
-        }
-        routeLayerRef.current = L.polyline(routeCoords, {
-          color: '#1a56db', weight: 5, opacity: 0.85,
-        }).addTo(mapRef.current!)
-      })
-    }
+    if (ordered.length < 2) return
+
+    const waypoints: [number, number][] = ordered.map(c => [c.lat!, c.lng!])
+
+    fetchRoadRoute(waypoints).then(routeCoords => {
+      if (!mapRef.current) return
+      const coords = routeCoords ?? waypoints
+
+      routeLayerRef.current = L.polyline(coords, {
+        color: '#1a56db', weight: routeCoords ? 5 : 4,
+        opacity: 0.85, dashArray: routeCoords ? undefined : '8,4',
+      }).addTo(mapRef.current)
+
+      // Place directional arrows every ~20 points along the route
+      const step = Math.max(1, Math.floor(coords.length / Math.max(1, Math.floor(coords.length / 20))))
+      for (let i = 0; i < coords.length - 1; i += step) {
+        const [lat1, lng1] = coords[i]
+        const [lat2, lng2] = coords[Math.min(i + 1, coords.length - 1)]
+        const bearing = computeBearing(lat1, lng1, lat2, lng2)
+        L.marker([lat1, lng1], { icon: makeArrowIcon(bearing), interactive: false })
+          .addTo(arrowLayerRef.current!)
+      }
+    })
   }, [customers, mapReady])
 
   return (
