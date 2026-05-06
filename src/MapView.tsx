@@ -15,6 +15,8 @@ interface Props {
   customers: Customer[]
   onMapClick?: (lat: number, lng: number) => void
   placingFor?: string | null
+  placingForName?: string
+  onCancelPlacement?: () => void
 }
 
 function makeNumberedIcon(num: number) {
@@ -64,7 +66,7 @@ async function fetchRoadRoute(waypoints: [number, number][]): Promise<[number, n
   }
 }
 
-export default function MapView({ customers, onMapClick, placingFor }: Props) {
+export default function MapView({ customers, onMapClick, placingFor, placingForName, onCancelPlacement }: Props) {
   const mapRef = useRef<L.Map | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const markerLayerRef = useRef<L.LayerGroup | null>(null)
@@ -72,6 +74,7 @@ export default function MapView({ customers, onMapClick, placingFor }: Props) {
   const locationMarkerRef = useRef<L.Marker | null>(null)
   const locationCircleRef = useRef<L.Circle | null>(null)
   const watchIdRef = useRef<number | null>(null)
+  const [mapReady, setMapReady] = useState(false)
   const [locationError, setLocationError] = useState<string | null>(null)
   const [routeInfo, setRouteInfo] = useState<{ count: number; names: string[] }>({ count: 0, names: [] })
 
@@ -84,6 +87,7 @@ export default function MapView({ customers, onMapClick, placingFor }: Props) {
     }).addTo(map)
     mapRef.current = map
     markerLayerRef.current = L.layerGroup().addTo(map)
+    setMapReady(true)
 
     map.on('click', (e: L.LeafletMouseEvent) => {
       onMapClick?.(e.latlng.lat, e.latlng.lng)
@@ -134,19 +138,24 @@ export default function MapView({ customers, onMapClick, placingFor }: Props) {
     }
   }, [])
 
-  // Update map click cursor when placing
+  // Update map click cursor and Escape key handler when placing
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    const container = map.getContainer()
-    container.style.cursor = placingFor ? 'crosshair' : ''
-  }, [placingFor])
+    map.getContainer().style.cursor = placingFor ? 'crosshair' : ''
 
-  // Redraw markers + route when customers change
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && placingFor) onCancelPlacement?.()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [placingFor, onCancelPlacement])
+
+  // Redraw markers + route when customers change (or when map becomes ready)
   useEffect(() => {
     const map = mapRef.current
     const layer = markerLayerRef.current
-    if (!map || !layer) return
+    if (!mapReady || !map || !layer) return
 
     layer.clearLayers()
     if (routeLayerRef.current) {
@@ -197,7 +206,7 @@ export default function MapView({ customers, onMapClick, placingFor }: Props) {
         }).addTo(mapRef.current!)
       })
     }
-  }, [customers])
+  }, [customers, mapReady])
 
   return (
     <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
@@ -243,11 +252,25 @@ export default function MapView({ customers, onMapClick, placingFor }: Props) {
       {placingFor && (
         <div style={{
           position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
-          background: '#1a56db', color: 'white', padding: '8px 20px',
-          borderRadius: '20px', zIndex: 2000, fontSize: '0.85rem',
-          boxShadow: '0 2px 10px rgba(0,0,0,0.25)', whiteSpace: 'nowrap', pointerEvents: 'none',
+          background: '#f97316', color: 'white',
+          borderRadius: '12px', zIndex: 2000,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+          display: 'flex', alignItems: 'center', gap: '10px',
+          padding: '10px 16px', whiteSpace: 'nowrap',
         }}>
-          地図上をクリックして位置を設定してください
+          <span style={{ fontSize: '0.88rem', fontWeight: 600 }}>
+            📍 {placingForName ? `「${placingForName}」の` : ''}位置を地図上でクリックして設定
+          </span>
+          <button
+            onClick={onCancelPlacement}
+            style={{
+              background: 'rgba(255,255,255,0.25)', border: '1px solid rgba(255,255,255,0.5)',
+              color: 'white', borderRadius: '6px', padding: '3px 10px',
+              cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600,
+            }}
+          >
+            キャンセル (Esc)
+          </button>
         </div>
       )}
     </div>

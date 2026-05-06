@@ -1,24 +1,58 @@
 import { useState, useEffect } from 'react'
 import {
   collection, query, where, onSnapshot,
-  addDoc, updateDoc, deleteDoc, doc, orderBy,
+  addDoc, updateDoc, deleteDoc, doc,
 } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
 import { db, auth } from './firebase'
 import type { Customer } from './types'
 import MapView from './MapView'
 
-async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&accept-language=ja&countrycodes=jp`
+async function nominatimFetch(
+  q: string,
+  jpOnly: boolean,
+  timeoutMs = 5000,
+): Promise<{ lat: number; lng: number } | null> {
+  const params = new URLSearchParams({ q, format: 'json', limit: '1', 'accept-language': 'ja' })
+  if (jpOnly) params.set('countrycodes', 'jp')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url)
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+      signal: controller.signal,
+    })
     if (!res.ok) return null
     const data = await res.json()
     if (!data?.length) return null
     const lat = parseFloat(data[0].lat)
     const lng = parseFloat(data[0].lon)
     return isNaN(lat) || isNaN(lng) ? null : { lat, lng }
-  } catch { return null }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// 住所末尾の番地（例: 8-29 / 1丁目2番3号）を取り除いて町名レベルにする
+function stripStreetNumber(address: string): string {
+  return address
+    .replace(/[0-9０-９]+[-−ー][0-9０-９]+[-−ー][0-9０-９]+[号室]?$/, '')
+    .replace(/[0-9０-９]+[-−ー][0-9０-９]+[番号室]?$/, '')
+    .replace(/[0-9０-９]+丁目[0-9０-９]*番[0-9０-９]*号?$/, '')
+    .replace(/[0-9０-９]+番地[0-9０-９]*号?$/, '')
+    .trim()
+}
+
+async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
+  const stripped = stripStreetNumber(address)
+  // フル住所・番地なし住所を同時並列で問い合わせ → 先に返ってきた有効な結果を使用
+  const queries: string[] = [address]
+  if (stripped && stripped !== address) queries.push(stripped)
+
+  const results = await Promise.all(queries.map(q => nominatimFetch(q, true, 5000)))
+  const hit = results.find(r => r !== null)
+  return hit ?? null
 }
 
 function escapeHtml(str: string) {
@@ -42,14 +76,16 @@ export default function AppPage() {
   const [geocodingIds, setGeocodingIds] = useState<Set<string>>(new Set())
 
   // Firestore realtime listener — scoped to this user
+  // orderBy は複合インデックスが必要なのでクライアント側でソートする
   useEffect(() => {
     const q = query(
       collection(db, 'customers'),
       where('userId', '==', user.uid),
-      orderBy('createdAt', 'asc'),
     )
     const unsub = onSnapshot(q, snap => {
-      setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer)))
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer))
+      docs.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+      setCustomers(docs)
     })
     return unsub
   }, [user.uid])
@@ -93,7 +129,11 @@ export default function AppPage() {
     setActiveTab('list')
     setFormSuccess(`「${name}」を登録しました。位置情報を取得中...`)
     const ok = await runGeocode(docRef.id, address)
-    if (!ok) setFormSuccess(`「${name}」を登録しましたが、住所から位置情報を取得できませんでした`)
+    if (ok) {
+      setFormSuccess(`「${name}」を登録しました`)
+    } else {
+      setFormSuccess(`「${name}」を登録しました（位置情報は取得できませんでした。顧客一覧から地図で設定してください）`)
+    }
   }
 
   const handleSeqChange = async (id: string, value: string) => {
@@ -208,7 +248,13 @@ export default function AppPage() {
         </aside>
 
         {/* Map */}
-        <MapView customers={customers} onMapClick={handleMapClick} placingFor={placingFor} />
+        <MapView
+          customers={customers}
+          onMapClick={handleMapClick}
+          placingFor={placingFor}
+          placingForName={placingFor ? (customers.find(c => c.id === placingFor)?.name ?? '') : ''}
+          onCancelPlacement={() => setPlacingFor(null)}
+        />
       </div>
     </div>
   )
@@ -259,6 +305,30 @@ function CustomerCard({
       </div>
       <div style={detailStyle}><span style={labelStyle}>住所</span><span>{escapeHtml(c.address)}</span></div>
       {c.products && <div style={detailStyle}><span style={labelStyle}>商品</span><span>{escapeHtml(c.products)}</span></div>}
+
+      {/* 位置未取得の場合は目立つ案内を表示 */}
+      {!c.geocoded && !isGeocoding && (
+        <div style={{
+          marginTop: '8px', background: '#fff7ed', border: '1px solid #fed7aa',
+          borderRadius: '7px', padding: '8px 10px', fontSize: '0.78rem', color: '#92400e',
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: '4px' }}>⚠ 位置情報を取得できませんでした</div>
+          <div style={{ marginBottom: '6px', lineHeight: 1.5 }}>
+            右の地図を目的地付近まで移動し、<b>「📍 地図でクリック設定」</b>ボタンを押してから地図上をクリックしてください。
+          </div>
+          <button
+            onClick={onStartPlacement}
+            style={{
+              width: '100%', padding: '6px', border: 'none', borderRadius: '6px',
+              background: '#f97316', color: 'white', fontWeight: 700, fontSize: '0.82rem',
+              cursor: 'pointer',
+            }}
+          >
+            📍 地図でクリック設定
+          </button>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: '6px', marginTop: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '0.78rem', color: '#4b5563' }}>順序:</span>
         <input
@@ -269,9 +339,11 @@ function CustomerCard({
           style={{ width: '62px', padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: '5px', fontSize: '0.85rem', textAlign: 'center' }}
         />
         {!c.geocoded && !isGeocoding && (
-          <button onClick={onRunGeocode} style={smallBtn('#e5e7eb', '#374151')}>住所から取得</button>
+          <button onClick={onRunGeocode} style={smallBtn('#e5e7eb', '#374151')}>住所で再取得</button>
         )}
-        <button onClick={onStartPlacement} style={smallBtn('#0ea5e9', 'white')}>地図で設定</button>
+        {c.geocoded && (
+          <button onClick={onStartPlacement} style={smallBtn('#0ea5e9', 'white')}>📍 地図で修正</button>
+        )}
         <button onClick={() => onDelete(c.id)} style={smallBtn('#ef4444', 'white')}>削除</button>
       </div>
     </div>
