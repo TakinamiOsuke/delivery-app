@@ -64,6 +64,7 @@ export default function AppPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [activeTab, setActiveTab] = useState<'register' | 'list'>('register')
   const [placingFor, setPlacingFor] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Form state
   const [fName, setFName] = useState('')
@@ -171,22 +172,43 @@ export default function AppPage() {
           <circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>
         </svg>
         <span style={{ fontWeight: 700, fontSize: '1.1rem', flex: 1 }}>配達業務管理</span>
-        <span style={{ fontSize: '0.82rem', opacity: 0.85, marginRight: '12px' }}>
+        {/* サイドバー開閉ボタン */}
+        <button onClick={() => setSidebarOpen(o => !o)} style={{
+          background: sidebarOpen ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.2)',
+          border: '1px solid rgba(255,255,255,0.4)',
+          color: 'white', borderRadius: '6px', padding: '5px 12px',
+          cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600,
+          display: 'flex', alignItems: 'center', gap: '5px',
+        }}>
+          {sidebarOpen ? (
+            <><span style={{ fontSize: '1rem' }}>✕</span> 閉じる</>
+          ) : (
+            <><span style={{ fontSize: '1rem' }}>☰</span> メニュー</>
+          )}
+        </button>
+        <span style={{ fontSize: '0.78rem', opacity: 0.8, maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {user.displayName || user.email}
         </span>
         <button onClick={() => signOut(auth)} style={{
           background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)',
-          color: 'white', borderRadius: '6px', padding: '5px 12px', cursor: 'pointer', fontSize: '0.82rem',
+          color: 'white', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '0.82rem',
         }}>
           ログアウト
         </button>
       </header>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Sidebar */}
-        <aside style={{ width: '380px', flexShrink: 0, background: 'white', display: 'flex', flexDirection: 'column', borderRight: '1px solid #e0e0e0', overflow: 'hidden' }}>
+        {/* Sidebar — メニューボタンで開閉 */}
+        <aside style={{
+          width: sidebarOpen ? '380px' : '0',
+          flexShrink: 0, background: 'white',
+          display: 'flex', flexDirection: 'column',
+          borderRight: sidebarOpen ? '1px solid #e0e0e0' : 'none',
+          overflow: 'hidden',
+          transition: 'width 0.25s ease',
+        }}>
           {/* Tabs */}
-          <div style={{ display: 'flex', borderBottom: '1px solid #e0e0e0', flexShrink: 0 }}>
+          <div style={{ display: 'flex', borderBottom: '1px solid #e0e0e0', flexShrink: 0, minWidth: '380px' }}>
             {(['register', 'list'] as const).map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab)} style={{
                 flex: 1, padding: '11px', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem',
@@ -200,7 +222,7 @@ export default function AppPage() {
             ))}
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px', minWidth: '380px' }}>
             {activeTab === 'register' ? (
               <form onSubmit={handleRegisterSubmit}>
                 {formError && <div style={alertStyle('error')}>{formError}</div>}

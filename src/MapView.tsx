@@ -22,20 +22,20 @@ interface Props {
 function makeNumberedIcon(num: number) {
   return L.divIcon({
     className: '',
-    html: `<div style="background:#1a56db;color:white;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.35)">${num}</div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17],
-    popupAnchor: [0, -20],
+    html: `<div style="background:#1a56db;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:10px;border:2px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)">${num}</div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    popupAnchor: [0, -14],
   })
 }
 
 function makeUnsetIcon() {
   return L.divIcon({
     className: '',
-    html: `<div style="background:#9ca3af;color:white;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.35)">?</div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17],
-    popupAnchor: [0, -20],
+    html: `<div style="background:#9ca3af;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:10px;border:2px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)">?</div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    popupAnchor: [0, -14],
   })
 }
 
@@ -74,6 +74,7 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
   const locationMarkerRef = useRef<L.Marker | null>(null)
   const locationCircleRef = useRef<L.Circle | null>(null)
   const watchIdRef = useRef<number | null>(null)
+  const placingForRef = useRef<string | null>(null)
   const [mapReady, setMapReady] = useState(false)
   const [locationError, setLocationError] = useState<string | null>(null)
   const [routeInfo, setRouteInfo] = useState<{ count: number; names: string[] }>({ count: 0, names: [] })
@@ -93,7 +94,7 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
       onMapClick?.(e.latlng.lat, e.latlng.lng)
     })
 
-    // Geolocation watch
+    // Geolocation watch — 取得するたびにマップ中心を現在地に追従
     if (navigator.geolocation) {
       const id = navigator.geolocation.watchPosition(
         (pos) => {
@@ -121,12 +122,17 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
             locationCircleRef.current.setLatLng([latitude, longitude])
             locationCircleRef.current.setRadius(accuracy)
           }
+
+          // 配置モード中は地図を動かさない（クリック位置がズレるため）
+          if (!placingForRef.current) {
+            map.panTo([latitude, longitude], { animate: true, duration: 0.5 })
+          }
         },
         (err) => {
           if (err.code === 1) setLocationError('位置情報の使用が拒否されました')
           else setLocationError('現在地を取得できません')
         },
-        { enableHighAccuracy: true, maximumAge: 10000 }
+        { enableHighAccuracy: true, maximumAge: 5000 }
       )
       watchIdRef.current = id
     }
@@ -137,6 +143,11 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
       mapRef.current = null
     }
   }, [])
+
+  // placingFor を ref に同期（geolocation コールバック内で参照するため）
+  useEffect(() => {
+    placingForRef.current = placingFor ?? null
+  }, [placingFor])
 
   // Update map click cursor and Escape key handler when placing
   useEffect(() => {
