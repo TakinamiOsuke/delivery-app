@@ -55,23 +55,6 @@ function makeCurrentLocationIcon() {
   })
 }
 
-function computeBearing(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const φ1 = lat1 * Math.PI / 180
-  const φ2 = lat2 * Math.PI / 180
-  const Δλ = (lng2 - lng1) * Math.PI / 180
-  const y = Math.sin(Δλ) * Math.cos(φ2)
-  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
-  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
-}
-
-function makeArrowIcon(bearing: number) {
-  return L.divIcon({
-    className: '',
-    html: `<div style="transform:rotate(${bearing}deg);color:#1a56db;font-size:13px;line-height:1;font-weight:900;filter:drop-shadow(0 0 2px white)">▶</div>`,
-    iconSize: [13, 13],
-    iconAnchor: [6, 6],
-  })
-}
 
 async function fetchRoadRoute(waypoints: [number, number][]): Promise<[number, number][] | null> {
   if (waypoints.length < 2) return null
@@ -94,8 +77,7 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
   const containerRef = useRef<HTMLDivElement>(null)
   const markerLayerRef = useRef<L.LayerGroup | null>(null)
   const routeLayerRef = useRef<L.Polyline | null>(null)
-  const arrowLayerRef = useRef<L.LayerGroup | null>(null)
-  const locationMarkerRef = useRef<L.Marker | null>(null)
+const locationMarkerRef = useRef<L.Marker | null>(null)
   const locationCircleRef = useRef<L.Circle | null>(null)
   const watchIdRef = useRef<number | null>(null)
   const placingForRef = useRef<string | null>(null)
@@ -118,7 +100,6 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     }).addTo(map)
     mapRef.current = map
     markerLayerRef.current = L.layerGroup().addTo(map)
-    arrowLayerRef.current = L.layerGroup().addTo(map)
     setMapReady(true)
 
     map.on('click', (e: L.LeafletMouseEvent) => {
@@ -225,17 +206,15 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     else if (positions.length > 1) map.fitBounds(L.latLngBounds(positions), { padding: [50, 50] })
   }, [customers, mapReady, deliveredIds])
 
-  // Draw route + directional arrows when customers change
+  // Draw route when customers change
   useEffect(() => {
     const map = mapRef.current
-    const arrows = arrowLayerRef.current
-    if (!mapReady || !map || !arrows) return
+    if (!mapReady || !map) return
 
     if (routeLayerRef.current) {
       map.removeLayer(routeLayerRef.current)
       routeLayerRef.current = null
     }
-    arrows.clearLayers()
 
     const geocoded = customers.filter(c => c.geocoded && c.lat !== null && c.lng !== null)
     const ordered = geocoded
@@ -251,21 +230,10 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     fetchRoadRoute(waypoints).then(routeCoords => {
       if (!mapRef.current) return
       const coords = routeCoords ?? waypoints
-
       routeLayerRef.current = L.polyline(coords, {
         color: '#1a56db', weight: routeCoords ? 5 : 4,
         opacity: 0.85, dashArray: routeCoords ? undefined : '8,4',
       }).addTo(mapRef.current)
-
-      // Place directional arrows every ~20 points along the route
-      const step = Math.max(1, Math.floor(coords.length / Math.max(1, Math.floor(coords.length / 20))))
-      for (let i = 0; i < coords.length - 1; i += step) {
-        const [lat1, lng1] = coords[i]
-        const [lat2, lng2] = coords[Math.min(i + 1, coords.length - 1)]
-        const bearing = computeBearing(lat1, lng1, lat2, lng2)
-        L.marker([lat1, lng1], { icon: makeArrowIcon(bearing), interactive: false })
-          .addTo(arrowLayerRef.current!)
-      }
     })
   }, [customers, mapReady])
 
