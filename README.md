@@ -63,7 +63,7 @@ npm run dev
 
 ---
 
-## GitHub Pages へのデプロイ手順
+## GitHub Pages へのデプロイ手順(開発者向け)
 
 ### 1. GitHub リポジトリを作成してプッシュ
 
