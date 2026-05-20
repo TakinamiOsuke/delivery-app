@@ -4,7 +4,6 @@ import 'leaflet/dist/leaflet.css'
 import 'leaflet-rotate'
 import type { Customer } from './types'
 
-// leaflet-rotate が L.Map に追加するメソッドの型補完
 declare module 'leaflet' {
   interface Map {
     setBearing(bearing: number): this
@@ -84,7 +83,10 @@ async function fetchRoadRoute(waypoints: [number, number][]): Promise<[number, n
   }
 }
 
-export default function MapView({ customers, onMapClick, placingFor, placingForName, onCancelPlacement, isDelivering, deliveredIds, onToggleDelivered }: Props) {
+export default function MapView({
+  customers, onMapClick, placingFor, placingForName, onCancelPlacement,
+  isDelivering, deliveredIds, onToggleDelivered,
+}: Props) {
   const mapRef = useRef<L.Map | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const markerLayerRef = useRef<L.LayerGroup | null>(null)
@@ -96,15 +98,19 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
   const isDeliveringRef = useRef(false)
   const onToggleDeliveredRef = useRef(onToggleDelivered)
   const onMapClickRef = useRef(onMapClick)
-  const compassAvailableRef = useRef(false) // DeviceOrientation が使えているか
+  // GPS で進行方向を取得中かどうか（true の間はコンパスで上書きしない）
+  const gpsHeadingActiveRef = useRef(false)
+  const gpsHeadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const [mapReady, setMapReady] = useState(false)
   const [locationError, setLocationError] = useState<string | null>(null)
-  const [bearing, setBearing] = useState(0) // 現在の地図回転角（コンパス表示用）
+  // 地図の現在回転角（コンパスアイコン描画用）
+  const [bearing, setBearingState] = useState(0)
 
-  // applyBearing: 地図回転 + コンパス UI 更新をまとめて行う（refで保持し古い参照を防ぐ）
-  const applyBearingRef = useRef((b: number) => {
-    try { mapRef.current?.setBearing(b) } catch { /* leaflet-rotate 未対応環境 */ }
-    setBearing(b)
+  // 地図回転 + state 更新をまとめる安定した関数（ref 経由）
+  const applyBearing = useRef((deg: number) => {
+    mapRef.current?.setBearing(deg)
+    setBearingState(deg)
   })
 
   // Sync refs
@@ -112,10 +118,11 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
   useEffect(() => { onToggleDeliveredRef.current = onToggleDelivered }, [onToggleDelivered])
   useEffect(() => { onMapClickRef.current = onMapClick }, [onMapClick])
 
-  // Init map once
+  // Init map
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return
-    const map = L.map(containerRef.current, { rotate: true, bearing: 0 }).setView([35.6812, 139.7671], 12)
+    const map = L.map(containerRef.current, { rotate: true, bearing: 0 })
+      .setView([35.6812, 139.7671], 12)
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map)
@@ -130,25 +137,21 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     if (navigator.geolocation) {
       const id = navigator.geolocation.watchPosition(
         (pos) => {
-          const { latitude, longitude, accuracy, heading } = pos.coords
+          const { latitude, longitude, accuracy, heading, speed } = pos.coords
           setLocationError(null)
 
+          // 現在地マーカー更新
           if (!locationMarkerRef.current) {
             locationMarkerRef.current = L.marker([latitude, longitude], {
-              icon: makeCurrentLocationIcon(),
-              zIndexOffset: 1000,
+              icon: makeCurrentLocationIcon(), zIndexOffset: 1000,
             }).addTo(map).bindPopup('現在地')
           } else {
             locationMarkerRef.current.setLatLng([latitude, longitude])
           }
-
           if (!locationCircleRef.current) {
             locationCircleRef.current = L.circle([latitude, longitude], {
-              radius: accuracy,
-              color: '#3b82f6',
-              fillColor: '#93c5fd',
-              fillOpacity: 0.2,
-              weight: 1,
+              radius: accuracy, color: '#3b82f6', fillColor: '#93c5fd',
+              fillOpacity: 0.2, weight: 1,
             }).addTo(map)
           } else {
             locationCircleRef.current.setLatLng([latitude, longitude])
@@ -158,9 +161,21 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
           if (isDeliveringRef.current && !placingForRef.current) {
             map.panTo([latitude, longitude], { animate: true, duration: 0.5 })
 
-            // DeviceOrientation が使えない場合は GPS ヘディングで代用
-            if (!compassAvailableRef.current && heading !== null && !isNaN(heading)) {
-              applyBearingRef.current(heading)
+            // ── 進行方向優先ロジック ──
+            // GPS heading: 0=北, 90=東, 180=南, 270=西（移動中のみ有効）
+            // speed > 0.5 m/s (≒ 1.8 km/h) かつ heading が有効な値のとき = 走行中
+            const moving = speed !== null && speed > 0.5
+              && heading !== null && !isNaN(heading)
+
+            if (moving) {
+              // 走行中: GPS の進行方向を地図上部に合わせる
+              gpsHeadingActiveRef.current = true
+              if (gpsHeadingTimerRef.current) clearTimeout(gpsHeadingTimerRef.current)
+              // 3 秒間 GPS heading が来なくなったらコンパスに切り替え
+              gpsHeadingTimerRef.current = setTimeout(() => {
+                gpsHeadingActiveRef.current = false
+              }, 3000)
+              applyBearing.current(heading!)
             }
           }
         },
@@ -175,65 +190,54 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
 
     return () => {
       if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current)
+      if (gpsHeadingTimerRef.current) clearTimeout(gpsHeadingTimerRef.current)
       map.remove()
       mapRef.current = null
     }
   }, [])
 
-  // 配達開始/終了 で地図回転リスナーを切り替え
+  // 配達開始/終了 でコンパスリスナーを管理
   useEffect(() => {
     if (!isDelivering) {
-      // 配達終了 → 北向きに戻す
-      compassAvailableRef.current = false
-      applyBearingRef.current(0)
+      // 配達終了 → 北向き（通常表示）に戻す
+      gpsHeadingActiveRef.current = false
+      applyBearing.current(0)
       return
     }
 
-    // DeviceOrientationEvent でコンパスを取得
+    // 停車中（GPS heading 未取得）はデバイスコンパスで補完
     const handleOrientation = (e: DeviceOrientationEvent) => {
-      // iOS: webkitCompassHeading (0=N, 90=E, 直接使える)
-      // Android (absolute=true): alpha は反時計回りなので (360 - alpha) % 360
+      if (gpsHeadingActiveRef.current) return // 走行中は GPS 優先
+
       const h =
         (e as DeviceOrientationEvent & { webkitCompassHeading?: number }).webkitCompassHeading
         ?? (e.absolute && e.alpha !== null ? (360 - e.alpha) % 360 : null)
-
-      if (h !== null) {
-        compassAvailableRef.current = true
-        applyBearingRef.current(h)
-      }
+      if (h !== null) applyBearing.current(h)
     }
 
     const start = async () => {
-      // iOS 13+ は requestPermission が必要（ユーザー操作直後のみ許可される）
       const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> }
       if (typeof DOE.requestPermission === 'function') {
         try {
           const res = await DOE.requestPermission()
           if (res !== 'granted') return
-        } catch {
-          return
-        }
+        } catch { return }
       }
       window.addEventListener('deviceorientation', handleOrientation, true)
     }
-
     start()
-    return () => {
-      window.removeEventListener('deviceorientation', handleOrientation, true)
-    }
+
+    return () => window.removeEventListener('deviceorientation', handleOrientation, true)
   }, [isDelivering])
 
   // Sync placingFor ref
-  useEffect(() => {
-    placingForRef.current = placingFor ?? null
-  }, [placingFor])
+  useEffect(() => { placingForRef.current = placingFor ?? null }, [placingFor])
 
-  // Cursor + Escape key when placing
+  // Cursor + Escape
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
     map.getContainer().style.cursor = placingFor ? 'crosshair' : ''
-
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && placingFor) onCancelPlacement?.()
     }
@@ -241,17 +245,14 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [placingFor, onCancelPlacement])
 
-  // Redraw customer markers when customers or delivered state changes
+  // Customer markers
   useEffect(() => {
     const map = mapRef.current
     const layer = markerLayerRef.current
     if (!mapReady || !map || !layer) return
-
     layer.clearLayers()
-
     const geocoded = customers.filter(c => c.geocoded && c.lat !== null && c.lng !== null)
     if (geocoded.length === 0) return
-
     const positions: [number, number][] = []
     geocoded.forEach(c => {
       const isDelivered = deliveredIds.has(c.id)
@@ -269,30 +270,20 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
         .addTo(layer)
       positions.push([c.lat!, c.lng!])
     })
-
     if (positions.length === 1) map.setView(positions[0], 14)
     else if (positions.length > 1) map.fitBounds(L.latLngBounds(positions), { padding: [50, 50] })
   }, [customers, mapReady, deliveredIds])
 
-  // Draw route when customers change
+  // Route
   useEffect(() => {
     const map = mapRef.current
     if (!mapReady || !map) return
-
-    if (routeLayerRef.current) {
-      map.removeLayer(routeLayerRef.current)
-      routeLayerRef.current = null
-    }
-
-    const geocoded = customers.filter(c => c.geocoded && c.lat !== null && c.lng !== null)
-    const ordered = geocoded
-      .filter(c => c.sequenceNumber !== null)
+    if (routeLayerRef.current) { map.removeLayer(routeLayerRef.current); routeLayerRef.current = null }
+    const ordered = customers
+      .filter(c => c.geocoded && c.lat !== null && c.lng !== null && c.sequenceNumber !== null)
       .sort((a, b) => a.sequenceNumber! - b.sequenceNumber!)
-
     if (ordered.length < 2) return
-
     const waypoints: [number, number][] = ordered.map(c => [c.lat!, c.lng!])
-
     fetchRoadRoute(waypoints).then(routeCoords => {
       if (!mapRef.current) return
       const coords = routeCoords ?? waypoints
@@ -307,22 +298,22 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
     <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
       <div ref={containerRef} style={{ flex: 1 }} />
 
-      {/* 北方位インジケーター（配達中のみ表示） */}
+      {/* 方位インジケーター（配達中のみ・右上に小さく表示）
+          地図が bearing 度回転しているので、矢印を -bearing 回転させると常に北を指す */}
       {isDelivering && (
         <div style={{
           position: 'absolute', top: '10px', right: '10px', zIndex: 1000,
           width: '28px', height: '28px',
           background: 'rgba(255,255,255,0.88)',
           borderRadius: '50%',
-          boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.22)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
+          pointerEvents: 'none',
         }}>
-          {/* bearing 分だけ地図が回っているので、矢印を -bearing 回転させると常に北を指す */}
           <svg
             width="14" height="14" viewBox="0 0 14 14"
-            style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.3s ease' }}
+            style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.25s ease' }}
           >
-            {/* 上半分: 赤（北） / 下半分: 白 */}
             <polygon points="7,1 10,13 7,10 4,13" fill="#ef4444" />
             <polygon points="7,1 4,13 7,10 10,13" fill="#d1d5db" />
           </svg>
