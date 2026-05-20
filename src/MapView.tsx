@@ -83,6 +83,7 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
   const placingForRef = useRef<string | null>(null)
   const isDeliveringRef = useRef(false)
   const onToggleDeliveredRef = useRef(onToggleDelivered)
+  const onMapClickRef = useRef(onMapClick)
   const [mapReady, setMapReady] = useState(false)
   const [locationError, setLocationError] = useState<string | null>(null)
   const [routeInfo, setRouteInfo] = useState<{ count: number; names: string[] }>({ count: 0, names: [] })
@@ -90,6 +91,7 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
   // Sync refs
   useEffect(() => { isDeliveringRef.current = isDelivering }, [isDelivering])
   useEffect(() => { onToggleDeliveredRef.current = onToggleDelivered }, [onToggleDelivered])
+  useEffect(() => { onMapClickRef.current = onMapClick }, [onMapClick])
 
   // Init map once
   useEffect(() => {
@@ -103,7 +105,7 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
     setMapReady(true)
 
     map.on('click', (e: L.LeafletMouseEvent) => {
-      onMapClick?.(e.latlng.lat, e.latlng.lng)
+      onMapClickRef.current?.(e.latlng.lat, e.latlng.lng)
     })
 
     if (navigator.geolocation) {
