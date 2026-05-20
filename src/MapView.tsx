@@ -1,7 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import 'leaflet-rotate'
 import type { Customer } from './types'
+
+// leaflet-rotate が L.Map に追加するメソッドの型補完
+declare module 'leaflet' {
+  interface Map {
+    setBearing(bearing: number): this
+    getBearing(): number
+  }
+  interface MapOptions {
+    rotate?: boolean
+    bearing?: number
+  }
+}
 
 delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -55,7 +68,6 @@ function makeCurrentLocationIcon() {
   })
 }
 
-
 async function fetchRoadRoute(waypoints: [number, number][]): Promise<[number, number][] | null> {
   if (waypoints.length < 2) return null
   const coords = waypoints.map(([lat, lng]) => `${lng},${lat}`).join(';')
@@ -77,16 +89,23 @@ export default function MapView({ customers, onMapClick, placingFor, placingForN
   const containerRef = useRef<HTMLDivElement>(null)
   const markerLayerRef = useRef<L.LayerGroup | null>(null)
   const routeLayerRef = useRef<L.Polyline | null>(null)
-const locationMarkerRef = useRef<L.Marker | null>(null)
+  const locationMarkerRef = useRef<L.Marker | null>(null)
   const locationCircleRef = useRef<L.Circle | null>(null)
   const watchIdRef = useRef<number | null>(null)
   const placingForRef = useRef<string | null>(null)
   const isDeliveringRef = useRef(false)
   const onToggleDeliveredRef = useRef(onToggleDelivered)
   const onMapClickRef = useRef(onMapClick)
+  const compassAvailableRef = useRef(false) // DeviceOrientation が使えているか
   const [mapReady, setMapReady] = useState(false)
   const [locationError, setLocationError] = useState<string | null>(null)
-  const [routeInfo, setRouteInfo] = useState<{ count: number; names: string[] }>({ count: 0, names: [] })
+  const [bearing, setBearing] = useState(0) // 現在の地図回転角（コンパス表示用）
+
+  // applyBearing: 地図回転 + コンパス UI 更新をまとめて行う（refで保持し古い参照を防ぐ）
+  const applyBearingRef = useRef((b: number) => {
+    try { mapRef.current?.setBearing(b) } catch { /* leaflet-rotate 未対応環境 */ }
+    setBearing(b)
+  })
 
   // Sync refs
   useEffect(() => { isDeliveringRef.current = isDelivering }, [isDelivering])
@@ -96,7 +115,7 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
   // Init map once
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return
-    const map = L.map(containerRef.current).setView([35.6812, 139.7671], 12)
+    const map = L.map(containerRef.current, { rotate: true, bearing: 0 }).setView([35.6812, 139.7671], 12)
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map)
@@ -111,7 +130,7 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
     if (navigator.geolocation) {
       const id = navigator.geolocation.watchPosition(
         (pos) => {
-          const { latitude, longitude, accuracy } = pos.coords
+          const { latitude, longitude, accuracy, heading } = pos.coords
           setLocationError(null)
 
           if (!locationMarkerRef.current) {
@@ -136,9 +155,13 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
             locationCircleRef.current.setRadius(accuracy)
           }
 
-          // 配達中かつ配置モード中でなければ追従
           if (isDeliveringRef.current && !placingForRef.current) {
             map.panTo([latitude, longitude], { animate: true, duration: 0.5 })
+
+            // DeviceOrientation が使えない場合は GPS ヘディングで代用
+            if (!compassAvailableRef.current && heading !== null && !isNaN(heading)) {
+              applyBearingRef.current(heading)
+            }
           }
         },
         (err) => {
@@ -156,6 +179,49 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
       mapRef.current = null
     }
   }, [])
+
+  // 配達開始/終了 で地図回転リスナーを切り替え
+  useEffect(() => {
+    if (!isDelivering) {
+      // 配達終了 → 北向きに戻す
+      compassAvailableRef.current = false
+      applyBearingRef.current(0)
+      return
+    }
+
+    // DeviceOrientationEvent でコンパスを取得
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      // iOS: webkitCompassHeading (0=N, 90=E, 直接使える)
+      // Android (absolute=true): alpha は反時計回りなので (360 - alpha) % 360
+      const h =
+        (e as DeviceOrientationEvent & { webkitCompassHeading?: number }).webkitCompassHeading
+        ?? (e.absolute && e.alpha !== null ? (360 - e.alpha) % 360 : null)
+
+      if (h !== null) {
+        compassAvailableRef.current = true
+        applyBearingRef.current(h)
+      }
+    }
+
+    const start = async () => {
+      // iOS 13+ は requestPermission が必要（ユーザー操作直後のみ許可される）
+      const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> }
+      if (typeof DOE.requestPermission === 'function') {
+        try {
+          const res = await DOE.requestPermission()
+          if (res !== 'granted') return
+        } catch {
+          return
+        }
+      }
+      window.addEventListener('deviceorientation', handleOrientation, true)
+    }
+
+    start()
+    return () => {
+      window.removeEventListener('deviceorientation', handleOrientation, true)
+    }
+  }, [isDelivering])
 
   // Sync placingFor ref
   useEffect(() => {
@@ -223,8 +289,6 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
       .filter(c => c.sequenceNumber !== null)
       .sort((a, b) => a.sequenceNumber! - b.sequenceNumber!)
 
-    setRouteInfo({ count: ordered.length, names: ordered.map(c => `[${c.sequenceNumber}] ${c.name}`) })
-
     if (ordered.length < 2) return
 
     const waypoints: [number, number][] = ordered.map(c => [c.lat!, c.lng!])
@@ -243,29 +307,27 @@ const locationMarkerRef = useRef<L.Marker | null>(null)
     <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
       <div ref={containerRef} style={{ flex: 1 }} />
 
-      {/* Route info panel */}
-      <div style={{
-        position: 'absolute', bottom: '20px', right: '20px',
-        background: 'white', borderRadius: '10px', padding: '12px 16px',
-        boxShadow: '0 2px 12px rgba(0,0,0,0.15)', fontSize: '0.8rem',
-        zIndex: 1000, maxHeight: '280px', overflowY: 'auto', minWidth: '170px',
-      }}>
-        <div style={{ fontWeight: 700, color: '#374151', marginBottom: '6px', fontSize: '0.82rem' }}>
-          配達ルート情報
+      {/* 北方位インジケーター（配達中のみ表示） */}
+      {isDelivering && (
+        <div style={{
+          position: 'absolute', top: '10px', right: '10px', zIndex: 1000,
+          width: '28px', height: '28px',
+          background: 'rgba(255,255,255,0.88)',
+          borderRadius: '50%',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          {/* bearing 分だけ地図が回っているので、矢印を -bearing 回転させると常に北を指す */}
+          <svg
+            width="14" height="14" viewBox="0 0 14 14"
+            style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.3s ease' }}
+          >
+            {/* 上半分: 赤（北） / 下半分: 白 */}
+            <polygon points="7,1 10,13 7,10 4,13" fill="#ef4444" />
+            <polygon points="7,1 4,13 7,10 10,13" fill="#d1d5db" />
+          </svg>
         </div>
-        {routeInfo.count === 0 ? (
-          <p style={{ color: '#9ca3af' }}>順序番号が設定された地点がありません</p>
-        ) : (
-          <>
-            <p style={{ color: '#6b7280', marginBottom: '4px' }}>配達先: <b>{routeInfo.count}件</b></p>
-            {routeInfo.names.map((n, i) => (
-              <div key={i} style={{ color: '#6b7280', fontSize: '0.75rem', marginTop: '2px' }}>
-                {i + 1 < routeInfo.count ? '↓' : '■'} {n}
-              </div>
-            ))}
-          </>
-        )}
-      </div>
+      )}
 
       {/* Location error */}
       {locationError && (
