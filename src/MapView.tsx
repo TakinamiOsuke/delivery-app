@@ -104,13 +104,14 @@ export default function MapView({
 
   const [mapReady, setMapReady] = useState(false)
   const [locationError, setLocationError] = useState<string | null>(null)
-  // 地図の現在回転角（コンパスアイコン描画用）
-  const [bearing, setBearingState] = useState(0)
+  // 実際の進行方向（0=北, 90=東 … GPS/コンパス値そのまま）
+  const [travelHeading, setTravelHeading] = useState(0)
 
   // 地図回転 + state 更新をまとめる安定した関数（ref 経由）
-  const applyBearing = useRef((deg: number) => {
-    mapRef.current?.setBearing(deg)
-    setBearingState(deg)
+  // leaflet-rotate は CW を正とする → 進行方向を上に向けるには (360 - heading) % 360 を渡す
+  const applyBearing = useRef((heading: number) => {
+    mapRef.current?.setBearing((360 - heading) % 360)
+    setTravelHeading(heading)
   })
 
   // Sync refs
@@ -312,7 +313,7 @@ export default function MapView({
         }}>
           <svg
             width="14" height="14" viewBox="0 0 14 14"
-            style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.25s ease' }}
+            style={{ transform: `rotate(${-travelHeading}deg)`, transition: 'transform 0.25s ease' }}
           >
             <polygon points="7,1 10,13 7,10 4,13" fill="#ef4444" />
             <polygon points="7,1 4,13 7,10 10,13" fill="#d1d5db" />
